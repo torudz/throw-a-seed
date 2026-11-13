@@ -429,9 +429,11 @@ task.spawn(function()
     end
 end)
 
--- ══════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════
 -- LUỒNG 2: Auto Train
--- ══════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════
+local PathfindingService = game:GetService("PathfindingService")
+
 task.spawn(function()
     local function findTrainPrompt()
         if okCS and ClientState and ClientState.MyPlot then
@@ -472,6 +474,68 @@ task.spawn(function()
         return bestPrompt, bestPart
     end
 
+    local function smartWalkTo(targetPos)
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not hrp or not hum then return end
+
+        -- Tính đường đi vòng qua tường bằng PathfindingService
+        local path = PathfindingService:CreatePath({
+            AgentRadius = 2.5,
+            AgentHeight = 5,
+            AgentCanJump = true,
+            WaypointSpacing = 4
+        })
+
+        local success = pcall(function()
+            path:ComputeAsync(hrp.Position, targetPos)
+        end)
+
+        local waypoints = {}
+        if success and path.Status == Enum.PathStatus.Success then
+            waypoints = path:GetWaypoints()
+        else
+            -- Dự phòng nếu không tính được path: đi thẳng tới mục tiêu
+            waypoints = { { Position = targetPos, Action = Enum.PathWaypointAction.Walk } }
+        end
+
+        for i, wp in ipairs(waypoints) do
+            if not getgenv().AutoTrain or getState() ~= "idle" then break end
+            if (hrp.Position - targetPos).Magnitude <= 7.5 then break end
+
+            if wp.Action == Enum.PathWaypointAction.Jump then
+                hum.Jump = true
+            end
+
+            hum:MoveTo(wp.Position)
+            local wpTimeout = tick() + 2.5
+            local lastPos = hrp.Position
+            local stuckTimer = tick()
+
+            while (hrp.Position - wp.Position).Magnitude > 3.5 and tick() < wpTimeout and getgenv().AutoTrain do
+                if (hrp.Position - targetPos).Magnitude <= 7.5 then break end
+
+                -- Kiểm tra kẹt tường: nếu đứng yên quá 0.7s thì tự nhảy + lách sang ngang
+                if (hrp.Position - lastPos).Magnitude < 0.4 then
+                    if tick() - stuckTimer > 0.7 then
+                        hum.Jump = true
+                        local sideOffset = hrp.CFrame.RightVector * (math.random(0, 1) == 0 and 5 or -5)
+                        hum:MoveTo(hrp.Position + sideOffset)
+                        task.wait(0.35)
+                        hum:MoveTo(wp.Position)
+                        stuckTimer = tick()
+                    end
+                else
+                    lastPos = hrp.Position
+                    stuckTimer = tick()
+                end
+
+                task.wait(0.1)
+            end
+        end
+    end
+
     while ScreenGui.Parent do
         if getgenv().AutoTrain then
             local throwState = getState()
@@ -486,15 +550,15 @@ task.spawn(function()
                 if char and hrp and hum and not char:GetAttribute("Training") then
                     local prompt, part = findTrainPrompt()
                     if prompt then
-                        local targetPos = part and part.Position or (prompt.Parent:IsA("Attachment") and prompt.Parent.WorldPosition)
-                        if targetPos then
-                            local dist = (hrp.Position - targetPos).Magnitude
-                            if dist > 8 then
-                                hum:MoveTo(targetPos)
-                                local timeout = tick() + 8
-                                while (hrp.Position - targetPos).Magnitude > 8 and tick() < timeout and getgenv().AutoTrain do
-                                    task.wait(0.1)
-                                end
+                        local rawPos = part and part.Position or (prompt.Parent:IsA("Attachment") and prompt.Parent.WorldPosition)
+                        if rawPos then
+                            -- Lùi điểm đứng cách tâm máy 4 stud về phía nhân vật để không húc thẳng vào máy
+                            local dir = (hrp.Position - rawPos)
+                            dir = Vector3.new(dir.X, 0, dir.Z)
+                            local standPos = dir.Magnitude > 0.1 and (rawPos + dir.Unit * 4) or rawPos
+
+                            if (hrp.Position - rawPos).Magnitude > 8 then
+                                smartWalkTo(standPos)
                             end
                         end
 
